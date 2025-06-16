@@ -20,7 +20,8 @@ import {
   Alert,
   Modal,
   Checkbox,
-  Drawer
+  Drawer,
+  Result
 } from 'antd';
 import {
   SearchOutlined,
@@ -35,7 +36,10 @@ import {
   BellOutlined,
   SettingOutlined,
   SoundOutlined,
-  NotificationOutlined
+  NotificationOutlined,
+  WarningOutlined,
+  CheckCircleOutlined,
+  ExclamationCircleOutlined
 } from '@ant-design/icons';
 import moment from 'moment';
 import './App.css';
@@ -59,6 +63,10 @@ function App() {
   });
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [recentNewJobs, setRecentNewJobs] = useState([]);
+  const [tokenExpired, setTokenExpired] = useState(false);
+  const [tokenExpiredModalVisible, setTokenExpiredModalVisible] = useState(false);
+  const [tokenValidating, setTokenValidating] = useState(false);
+  const [tokenStatus, setTokenStatus] = useState({ valid: null, message: '' });
 
   useEffect(() => {
     // Load saved token and settings on startup
@@ -70,6 +78,9 @@ function App() {
       setJobs(updatedJobs);
       setTotalJobs(updatedJobs.length);
       setLastUpdated(moment());
+      // Reset token expired state when jobs are successfully updated
+      setTokenExpired(false);
+      setTokenStatus({ valid: true, message: 'Token is working correctly' });
     });
 
     // Listen for new job notifications with enhanced details
@@ -109,6 +120,60 @@ function App() {
       }
     });
 
+    // Listen for token expiration events
+    ipcRenderer.on('token-expired', (event, data) => {
+      setTokenExpired(true);
+      setScrapingActive(false);
+      setTokenStatus({ 
+        valid: false, 
+        message: `Token expired (Status: ${data.statusCode})` 
+      });
+      
+      // Show token expiration modal
+      setTokenExpiredModalVisible(true);
+      
+      // Show urgent in-app notification with enhanced details
+      notification.error({
+        message: '🚨 Token Expired!',
+        description: (
+          <div>
+            <div>Your Bearer token has expired and job monitoring has stopped.</div>
+            <div style={{ marginTop: 8, fontSize: '12px', color: '#666' }}>
+              Status Code: {data.statusCode} | Time: {moment(data.timestamp).format('HH:mm:ss')}
+            </div>
+          </div>
+        ),
+        duration: 0, // Don't auto-dismiss
+        icon: <WarningOutlined style={{ color: '#ff4d4f' }} />,
+        key: 'token-expired',
+        btn: (
+          <Button 
+            type="primary" 
+            size="small" 
+            danger
+            onClick={() => {
+              notification.destroy('token-expired');
+              setTokenExpiredModalVisible(true);
+            }}
+          >
+            Update Token Now
+          </Button>
+        )
+      });
+    });
+
+    // Listen for system notification trigger to show token update modal
+    ipcRenderer.on('show-token-update-modal', () => {
+      setTokenExpiredModalVisible(true);
+      // Also show a subtle in-app notification
+      notification.info({
+        message: 'Token Update Required',
+        description: 'Please update your Bearer token to continue monitoring jobs.',
+        icon: <WarningOutlined style={{ color: '#faad14' }} />,
+        duration: 4
+      });
+    });
+
     ipcRenderer.on('scraping-error', (event, error) => {
       notification.error({
         message: 'Scraping Error',
@@ -120,6 +185,8 @@ function App() {
     return () => {
       ipcRenderer.removeAllListeners('jobs-updated');
       ipcRenderer.removeAllListeners('new-jobs-notification');
+      ipcRenderer.removeAllListeners('token-expired');
+      ipcRenderer.removeAllListeners('show-token-update-modal');
       ipcRenderer.removeAllListeners('scraping-error');
     };
   }, [notificationSettings.soundEnabled]);
@@ -128,8 +195,42 @@ function App() {
     try {
       const token = await ipcRenderer.invoke('get-token');
       setBearerToken(token);
+      
+      // Validate token if it exists
+      if (token) {
+        validateToken(token);
+      }
     } catch (error) {
       console.error('Error loading token:', error);
+    }
+  };
+
+  const validateToken = async (token) => {
+    if (!token) return;
+    
+    setTokenValidating(true);
+    try {
+      const result = await ipcRenderer.invoke('validate-token', token);
+      
+      if (result.success) {
+        if (result.valid) {
+          setTokenStatus({ valid: true, message: 'Token is valid and working' });
+          setTokenExpired(false);
+        } else {
+          setTokenStatus({ 
+            valid: false, 
+            message: result.expired ? 'Token has expired' : 'Token is invalid' 
+          });
+          setTokenExpired(true);
+        }
+      } else {
+        setTokenStatus({ valid: false, message: result.error });
+        setTokenExpired(true);
+      }
+    } catch (error) {
+      setTokenStatus({ valid: false, message: 'Failed to validate token' });
+    } finally {
+      setTokenValidating(false);
     }
   };
 
@@ -181,15 +282,51 @@ function App() {
   const saveToken = async () => {
     try {
       await ipcRenderer.invoke('save-token', bearerToken);
+      
+      // Enhanced success notification with more details
       notification.success({
-        message: 'Token Saved',
-        description: 'Bearer token has been saved successfully',
+        message: '✅ Bearer Token Updated!',
+        description: (
+          <div>
+            <div>Token has been saved and validated successfully.</div>
+            <div style={{ marginTop: 8, fontSize: '12px', color: '#52c41a' }}>
+              Job monitoring will resume automatically if auto-scraping was enabled.
+            </div>
+          </div>
+        ),
+        icon: <CheckCircleOutlined style={{ color: '#52c41a' }} />,
+        duration: 6,
+        placement: 'topRight'
       });
+      
+      // Validate the new token
+      validateToken(bearerToken);
+      
+      // Close token expired modal if open
+      setTokenExpiredModalVisible(false);
+      
+      // Dismiss the persistent token expired notification
+      notification.destroy('token-expired');
+      
     } catch (error) {
       notification.error({
         message: 'Error',
         description: 'Failed to save token',
+        duration: 5
       });
+    }
+  };
+
+  const dismissTokenReminders = async () => {
+    try {
+      await ipcRenderer.invoke('dismiss-token-reminders');
+      notification.info({
+        message: 'Reminders Dismissed',
+        description: 'Token expiration reminders have been turned off.',
+        duration: 3
+      });
+    } catch (error) {
+      console.error('Error dismissing reminders:', error);
     }
   };
 
@@ -209,11 +346,18 @@ function App() {
         setJobs(result.jobs);
         setTotalJobs(result.jobs.length);
         setLastUpdated(moment());
+        setTokenExpired(false);
+        setTokenStatus({ valid: true, message: 'Token is working correctly' });
         notification.success({
           message: 'Jobs Fetched',
           description: `Found ${result.jobs.length} programming jobs`,
         });
       } else {
+        if (result.tokenExpired) {
+          setTokenExpired(true);
+          setTokenStatus({ valid: false, message: 'Token has expired' });
+          setTokenExpiredModalVisible(true);
+        }
         notification.error({
           message: 'Fetch Failed',
           description: result.error,
@@ -238,6 +382,15 @@ function App() {
       return;
     }
 
+    if (tokenExpired) {
+      notification.warning({
+        message: 'Token Expired',
+        description: 'Please update your Bearer token before starting auto-scraping',
+      });
+      setTokenExpiredModalVisible(true);
+      return;
+    }
+
     try {
       if (scrapingActive) {
         await ipcRenderer.invoke('stop-job-scraping');
@@ -247,14 +400,26 @@ function App() {
           description: 'Job scraping has been stopped',
         });
       } else {
-        await ipcRenderer.invoke('start-job-scraping', bearerToken);
-        setScrapingActive(true);
-        setNewJobsCount(0); // Reset new jobs count
-        setRecentNewJobs([]); // Clear recent new jobs
-        notification.success({
-          message: 'Scraping Started',
-          description: 'Job scraping is now active (every 5 seconds)',
-        });
+        const result = await ipcRenderer.invoke('start-job-scraping', bearerToken);
+        if (result.success) {
+          setScrapingActive(true);
+          setNewJobsCount(0); // Reset new jobs count
+          setRecentNewJobs([]); // Clear recent new jobs
+          setTokenExpired(false);
+          notification.success({
+            message: 'Scraping Started',
+            description: 'Job scraping is now active (every 5 seconds)',
+          });
+        } else {
+          if (result.error === 'Token expired or invalid') {
+            setTokenExpired(true);
+            setTokenExpiredModalVisible(true);
+          }
+          notification.error({
+            message: 'Failed to Start Scraping',
+            description: result.error,
+          });
+        }
       }
     } catch (error) {
       notification.error({
@@ -288,6 +453,17 @@ function App() {
     ));
   };
 
+  const getTokenStatusColor = () => {
+    if (tokenStatus.valid === null) return 'default';
+    return tokenStatus.valid ? 'success' : 'error';
+  };
+
+  const getTokenStatusIcon = () => {
+    if (tokenValidating) return <ReloadOutlined spin />;
+    if (tokenStatus.valid === null) return <UserOutlined />;
+    return tokenStatus.valid ? <CheckCircleOutlined /> : <ExclamationCircleOutlined />;
+  };
+
   return (
     <Layout style={{ minHeight: '100vh' }}>
       <Header style={{ 
@@ -310,7 +486,12 @@ function App() {
             onClick={() => setSettingsVisible(true)}
             style={{ color: 'rgba(255, 255, 255, 0.65)' }}
           />
-          {scrapingActive && (
+          {tokenExpired && (
+            <Badge dot color="red">
+              <WarningOutlined style={{ fontSize: 20, color: '#ff4d4f' }} />
+            </Badge>
+          )}
+          {scrapingActive && !tokenExpired && (
             <Badge dot color="green">
               <BellOutlined style={{ fontSize: 20, color: 'white' }} />
             </Badge>
@@ -332,17 +513,71 @@ function App() {
                   placeholder="Enter Bearer Token"
                   value={bearerToken}
                   onChange={(e) => setBearerToken(e.target.value)}
-                  prefix={<UserOutlined />}
+                  prefix={getTokenStatusIcon()}
+                  status={getTokenStatusColor()}
                 />
-                <Button 
-                  type="primary" 
-                  onClick={saveToken}
-                  style={{ width: '100%' }}
-                >
-                  Save Token
-                </Button>
+                {tokenStatus.message && (
+                  <Alert
+                    message={tokenStatus.message}
+                    type={tokenStatus.valid ? 'success' : 'error'}
+                    showIcon
+                    size="small"
+                    style={{ 
+                      fontSize: '12px',
+                      animation: tokenStatus.valid === false ? 'pulse 2s infinite' : 'none'
+                    }}
+                    action={
+                      tokenStatus.valid === false && (
+                        <Button 
+                          size="small" 
+                          type="link" 
+                          onClick={() => setTokenExpiredModalVisible(true)}
+                          style={{ padding: 0 }}
+                        >
+                          Fix Now
+                        </Button>
+                      )
+                    }
+                  />
+                )}
+                <Space style={{ width: '100%' }}>
+                  <Button 
+                    type="primary" 
+                    onClick={saveToken}
+                    style={{ flex: 1 }}
+                  >
+                    Save Token
+                  </Button>
+                  <Button 
+                    onClick={() => validateToken(bearerToken)}
+                    loading={tokenValidating}
+                    disabled={!bearerToken}
+                  >
+                    Validate
+                  </Button>
+                </Space>
               </Space>
             </Card>
+
+            {tokenExpired && (
+              <Alert
+                message="Token Expired"
+                description="Your Bearer token has expired. Please update it to continue monitoring jobs."
+                type="error"
+                showIcon
+                icon={<WarningOutlined />}
+                action={
+                  <Button 
+                    size="small" 
+                    type="primary" 
+                    danger
+                    onClick={() => setTokenExpiredModalVisible(true)}
+                  >
+                    Update Token
+                  </Button>
+                }
+              />
+            )}
 
             <Card title="Controls" size="small">
               <Space direction="vertical" style={{ width: '100%' }}>
@@ -352,6 +587,7 @@ function App() {
                   onClick={fetchJobsManually}
                   loading={loading}
                   style={{ width: '100%' }}
+                  disabled={tokenExpired}
                 >
                   Fetch Jobs Now
                 </Button>
@@ -363,6 +599,7 @@ function App() {
                     onChange={toggleScraping}
                     checkedChildren={<PlayCircleOutlined />}
                     unCheckedChildren={<PauseCircleOutlined />}
+                    disabled={tokenExpired}
                   />
                 </div>
               </Space>
@@ -416,7 +653,7 @@ function App() {
               </Card>
             )}
 
-            {scrapingActive && (
+            {scrapingActive && !tokenExpired && (
               <Alert
                 message="Auto-scraping is active"
                 description="The app will check for new jobs every 5 seconds and send notifications"
@@ -508,13 +745,80 @@ function App() {
                 <div style={{ textAlign: 'center', padding: '40px 0' }}>
                   <CodeOutlined style={{ fontSize: 48, color: '#bfbfbf', marginBottom: 16 }} />
                   <Title level={4} type="secondary">No jobs found</Title>
-                  <Text type="secondary">Enter your Bearer token and click "Fetch Jobs Now" to get started</Text>
+                  <Text type="secondary">
+                    {tokenExpired 
+                      ? 'Please update your Bearer token to fetch jobs'
+                      : 'Enter your Bearer token and click "Fetch Jobs Now" to get started'
+                    }
+                  </Text>
                 </div>
               )
             }}
           />
         </Content>
       </Layout>
+
+      {/* Token Expired Modal */}
+      <Modal
+        title={
+          <Space>
+            <WarningOutlined style={{ color: '#ff4d4f' }} />
+            <span>Bearer Token Expired</span>
+          </Space>
+        }
+        open={tokenExpiredModalVisible}
+        onCancel={() => setTokenExpiredModalVisible(false)}
+        footer={[
+          <Button key="dismiss" onClick={dismissTokenReminders}>
+            Dismiss Reminders
+          </Button>,
+          <Button key="cancel" onClick={() => setTokenExpiredModalVisible(false)}>
+            Later
+          </Button>,
+          <Button key="save" type="primary" onClick={saveToken}>
+            Save & Validate New Token
+          </Button>
+        ]}
+        width={600}
+        maskClosable={false}
+      >
+        <Result
+          status="warning"
+          title="Your Bearer token has expired"
+          subTitle="To continue monitoring jobs, please update your Bearer token below."
+        />
+        
+        <div style={{ marginTop: 24 }}>
+          <Text strong>Enter New Bearer Token:</Text>
+          <Input.Password
+            placeholder="Enter your new Bearer token"
+            value={bearerToken}
+            onChange={(e) => setBearerToken(e.target.value)}
+            style={{ marginTop: 8 }}
+            size="large"
+          />
+          
+          {tokenStatus.message && (
+            <Alert
+              message={tokenStatus.message}
+              type={tokenStatus.valid ? 'success' : 'error'}
+              showIcon
+              style={{ marginTop: 16 }}
+            />
+          )}
+        </div>
+        
+        <div style={{ marginTop: 24 }}>
+          <Title level={5}>How to get a new Bearer token:</Title>
+          <ol style={{ paddingLeft: 20 }}>
+            <li>Log in to your Guru.com account</li>
+            <li>Open Developer Tools (F12)</li>
+            <li>Go to the Network tab</li>
+            <li>Make a search request on Guru.com</li>
+            <li>Find the API request and copy the Bearer token from the Authorization header</li>
+          </ol>
+        </div>
+      </Modal>
 
       {/* Settings Drawer */}
       <Drawer
