@@ -13,6 +13,16 @@ let previousJobs = [];
 let tokenExpiredNotified = false;
 let lastTokenExpiredTime = null;
 
+// Get the correct icon path for both dev and production
+function getIconPath() {
+  if (isDev) {
+    return path.join(__dirname, 'icon.png');
+  } else {
+    // In production, the icon is in the same directory as electron.js (build folder)
+    return path.join(__dirname, 'icon.png');
+  }
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -22,7 +32,7 @@ function createWindow() {
       contextIsolation: false,
       enableRemoteModule: true,
     },
-    icon: path.join(__dirname, 'icon.png'),
+    icon: getIconPath(),
     titleBarStyle: 'hiddenInset',
     show: false,
   });
@@ -30,7 +40,7 @@ function createWindow() {
   mainWindow.loadURL(
     isDev
       ? 'http://localhost:3000'
-      : `file://${path.join(__dirname, '../build/index.html')}`
+      : `file://${path.join(__dirname, 'index.html')}`
   );
 
   mainWindow.once('ready-to-show', () => {
@@ -92,7 +102,7 @@ function showTokenExpiredNotification() {
     const notification = new Notification({
       title: '🚨 Guru Job Alert - Token Expired!',
       body: 'Your Bearer token has expired. Click here to update it and resume job monitoring.',
-      icon: path.join(__dirname, 'icon.png'),
+      icon: getIconPath(),
       sound: true,
       urgency: 'critical',
       timeoutType: 'never', // Keep notification until clicked
@@ -148,7 +158,7 @@ function showTokenUpdateSuccessNotification() {
     const notification = new Notification({
       title: '✅ Token Updated Successfully!',
       body: 'Your Bearer token has been updated and validated. Job monitoring will resume automatically.',
-      icon: path.join(__dirname, 'icon.png'),
+      icon: getIconPath(),
       sound: true,
       urgency: 'normal',
       timeoutType: 'default'
@@ -191,7 +201,7 @@ function startTokenReminderInterval(delay = 15 * 60 * 1000) { // Default 15 minu
           const notification = new Notification({
             title: '⏰ Token Still Expired',
             body: `Your token has been expired for ${hoursExpired > 0 ? hoursExpired + ' hours' : 'some time'}. Update it to continue monitoring jobs.`,
-            icon: path.join(__dirname, 'icon.png'),
+            icon: getIconPath(),
             sound: true,
             urgency: 'normal'
           });
@@ -255,7 +265,7 @@ function showSystemNotification(title, body, newJobs) {
     const notification = new Notification({
       title: title,
       body: body,
-      icon: path.join(__dirname, 'icon.png'),
+      icon: getIconPath(),
       sound: true,
       urgency: 'normal',
       timeoutType: 'default'
